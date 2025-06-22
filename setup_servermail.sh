@@ -289,7 +289,7 @@ EOF
     cd /usr/local/etc/postfix/
     
     # Habilitar submission en master.cf
-    sed -i.bak 's/^#submission\s*inet/submission inet/' /usr/local/etc/postfix/master.cf
+    sed -i.bak 's/^#submission[[:space:]]*inet/submission inet/' /usr/local/etc/postfix/master.cf
     
     # Configurar SNI maps
     cat > sni_maps << EOF
