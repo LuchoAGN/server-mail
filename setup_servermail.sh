@@ -11,6 +11,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Array para almacenar respaldos
+BACKUPS=()
+
 # Configuración inicial
 EMAIL_ADMIN="garcialuis783@gmail.com"
 MAIN_DOMAIN="media-lagn.ink"
@@ -37,6 +40,26 @@ check_command() {
     else
         log_error "$1 - Falló"
         exit 1
+    fi
+}
+
+# Función para crear un respaldo
+create_backup() {
+    local original_file="$1"
+    local backup_file="${original_file}.$(date +%Y%m%d%H%M%S).bak"
+    if [ -f "${original_file}" ]; then
+        cp "${original_file}" "${backup_file}"
+        log_info "Respaldo creado: ${backup_file}"
+        BACKUPS+=("${backup_file}")
+    fi
+}
+
+# Función para restaurar el último respaldo
+restore_last_backup() {
+    if [ ${#BACKUPS[@]} -gt 0 ]; then
+        local last_backup="${BACKUPS[-1]}"
+        log_warning "Restaurando el último respaldo: ${last_backup}"
+        cp "${last_backup}" "${last_backup%.*}" # Restaura al nombre original
     fi
 }
 
@@ -100,7 +123,7 @@ EOF
     
     # Configurar main.cf
     cd /usr/local/etc/postfix/
-    cp main.cf main.cf.backup
+    create_backup "/usr/local/etc/postfix/main.cf"
     
     sed -i.bak \
         -e "s/^#myhostname = host\.domain\.ltd/myhostname = ${MAIL_SUBDOMAIN_MAIN}/" \
@@ -181,6 +204,7 @@ configure_dovecot() {
     rm -rf example-config/
     
     # Configurar autenticación
+    create_backup "/usr/local/etc/dovecot/conf.d/10-auth.conf"
     sed -i '' \
         -e 's/^#disable_plaintext_auth = yes/disable_plaintext_auth = yes/' \
         -e 's/^!include auth-system.conf.ext/#!include auth-system.conf.ext/' \
@@ -192,6 +216,7 @@ configure_dovecot() {
 mail_home = /var/mail/vhosts/%d/%n
 mail_location = maildir:~
 EOF
+    create_backup "/usr/local/etc/dovecot/conf.d/10-mail.conf"
     
     sed -i '' \
         -e 's/^#mail_uid =.*/mail_uid = 1002/' \
@@ -200,6 +225,7 @@ EOF
         /usr/local/etc/dovecot/conf.d/10-mail.conf
     
     # Configurar master
+    create_backup "/usr/local/etc/dovecot/conf.d/10-master.conf"
     sed -i '' \
         -e 's/^#port = 993/port = 993/' \
         -e 's/^#ssl = yes/ssl = yes/' \
@@ -209,6 +235,7 @@ EOF
         /usr/local/etc/dovecot/conf.d/10-master.conf
     
     # Configurar SSL
+    create_backup "/usr/local/etc/dovecot/conf.d/10-ssl.conf"
     sed -i '' \
         -e 's/^#ssl = yes/ssl = yes/' \
         -e "s|^ssl_cert = </etc/ssl/certs/dovecot.pem|ssl_cert = </usr/local/etc/letsencrypt/live/${MAIL_SUBDOMAIN_MAIN}/fullchain.pem|" \
@@ -298,6 +325,7 @@ configure_opendkim() {
     rm -f opendkim.conf.sample
     
     # Configurar OpenDKIM
+    create_backup "/usr/local/etc/mail/opendkim.conf"
     cat > /usr/local/etc/mail/opendkim.conf << EOF
 LogWhy yes
 Syslog yes
@@ -336,6 +364,12 @@ EOF
 # Función principal
 main() {
     log_info "Iniciando configuración del servidor de correo..."
+
+    # Configurar trap para rollback en caso de error
+    trap 'log_error "Script interrupted or failed. Attempting rollback..."; restore_last_backup; exit 1' ERR INT TERM
+
+    # Limpiar respaldos al finalizar exitosamente
+    trap 'log_info "Script completed successfully. Cleaning up backups..."; rm -f *.bak' EXIT
     
     # Verificar que se ejecuta como root
     if [ "$EUID" -ne 0 ]; then
@@ -343,7 +377,17 @@ main() {
         exit 1
     fi
     
-    configure_certbot
+    # Preguntar si desea configurar Certbot
+    while true; do
+        read -p "Do you want to configure Certbot for SSL certificates? (yes/no): " certbot_choice
+        case "$certbot_choice" in
+            [Yy][Ee][Ss] ) configure_certbot; break;;
+            [Nn][Oo] ) log_info "Skipping Certbot configuration."; break;;
+            * ) log_warning "Invalid choice. Please enter 'yes' or 'no'.";;
+        esac
+    done
+
+    # Ejecutar el resto de las configuraciones
     configure_postfix
     configure_dovecot
     configure_initial_domains
